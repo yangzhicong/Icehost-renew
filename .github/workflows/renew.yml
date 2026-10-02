@@ -1,9 +1,12 @@
 name: IceHost Hourly KeepAlive
 
 on:
-  schedule:
-    - cron: '0 */4 * * *'
+  #schedule:
+    #- cron: '0 */4 * * *'
   workflow_dispatch:
+    inputs:
+      from:
+        required: false
 
 permissions:
   contents: read
