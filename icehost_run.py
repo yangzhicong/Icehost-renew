@@ -179,11 +179,8 @@ def run():
             var best = null, bestKids = 1e9;
             for (var i = 0; i < els.length; i++) {
                 var el = els[i];
-                var own = '';
-                for (var n = el.firstChild; n; n = n.nextSibling) {
-                    if (n.nodeType === 3) own += n.nodeValue;
-                }
-                own = norm(own);
+                // 用 innerText（含子孙的渲染文本），防按钮文字被拆分到多个子元素
+                var own = norm(el.innerText || '');
                 if (!own) continue;
                 if (own.indexOf(want) === -1) continue;
                 if (excl && own.indexOf(excl) !== -1) continue;
@@ -226,11 +223,8 @@ def run():
                     var out = ['frames=' + document.querySelectorAll('iframe').length];
                     for (var i = 0; i < els.length; i++) {
                         var el = els[i];
-                        var own = '';
-                        for (var n = el.firstChild; n; n = n.nextSibling) {
-                            if (n.nodeType === 3) own += n.nodeValue;
-                        }
-                        if (/przed/i.test(own)) {
+                        var own = el.innerText || '';
+                        if (/przed|dodaj/i.test(own)) {
                             var cs = window.getComputedStyle(el);
                             out.push(el.tagName + ' | display=' + cs.display +
                                 ' | visibility=' + cs.visibility +
@@ -248,6 +242,8 @@ def run():
         try:
             state = None
             # 步骤1：服务器详情页 → 只找 6 小时按钮（状态A）
+            print(f"当前页面 URL: {sb.get_current_url()}")
+            print(f"页面标题: {sb.get_title()}")
             pl_server = sb.get_page_source().lower()
             if "zawieszony" in pl_server or "suspended" in pl_server:
                 print("步骤1：服务器详情页显示已暂停，跳过本页检测，直接前往主页...")
@@ -255,6 +251,9 @@ def run():
                 print("步骤1：在服务器详情页寻找 6 小时续期按钮...")
                 if _click_btn('dodaj 6', timeout=20):
                     state = 'A'
+                else:
+                    print("步骤1 未找到按钮，打印详情页实际按钮快照：")
+                    _dump_buttons()
 
             # 步骤2：面板主页 → 只找二次确认按钮（状态B）
             # （6 小时按钮只在服务详情页，主页没有）
