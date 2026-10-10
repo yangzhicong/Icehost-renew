@@ -231,11 +231,40 @@ def run():
                     print("找到主页续期按钮，正在点击...")
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
-                    # 确认弹窗中的二次确认按钮
-                    confirm_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'tak,')]"
-                    sb.wait_for_element_visible(confirm_xpath, timeout=15)
-                    print("找到二次确认按钮，正在点击...")
-                    sb.click(confirm_xpath)
+                    # 确认弹窗中的二次确认按钮（TAK, PRZEDŁUŻ SERWER）——同样用 JS，XPath not(*) 吃不到
+                    js_confirm = """(function(){
+        var els = document.querySelectorAll('body *');
+        var best = null, bestScore = -1, bestTxt = '';
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            var txt = (el.innerText || '').trim();
+            if (!txt) continue;
+            var low = txt.toLowerCase();
+            if (low.indexOf('tak') === -1) continue;
+            if (low.indexOf('przedłu') === -1 && low.indexOf('przedlu') === -1) continue;
+            var r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            if (getComputedStyle(el).visibility === 'hidden') continue;
+            var d = 0, p = el;
+            while (p.parentElement) { d++; p = p.parentElement; }
+            var score = d - txt.length;
+            if (score > bestScore) { bestScore = score; best = el; bestTxt = txt; }
+        }
+        if (best) { best.click(); return bestTxt.slice(0,30); }
+        return null;
+    })()"""
+                    _c2 = None
+                    for _ in range(8):
+                        try:
+                            _c2 = sb.execute_script(js_confirm)
+                        except Exception:
+                            _c2 = None
+                        if _c2:
+                            break
+                        sb.sleep(2)
+                    if not _c2:
+                        raise Exception("确认弹窗中未找到 TAK 按钮")
+                    print(f"找到二次确认按钮，正在点击... ({_c2})")
                     sb.sleep(5)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("刷新页面确认续期结果...")
