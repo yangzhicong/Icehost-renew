@@ -192,10 +192,43 @@ def run():
                     sb.open("https://dash.icehost.pl/")
                     sb.sleep(5)
                     # 主页卡片上的续期按钮（波兰语，DOM 为首字母大写）
-                    renew_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'przed') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'serwer')]"
-                    sb.wait_for_element_visible(renew_xpath, timeout=20)
+                    # JS 查找最深层可见的 PRZEDŁUŻ SERWER 并点击（XPath not(*) 在此 DOM 上命中不了）
+                    js_renew = """(function(){
+        var els = document.querySelectorAll('body *');
+        var best = null, bestScore = -1, bestTxt = '';
+        for (var i = 0; i < els.length; i++) {
+            var el = els[i];
+            var txt = (el.innerText || '').trim();
+            if (!txt) continue;
+            var low = txt.toLowerCase();
+            if (low.indexOf('potwierd') !== -1) continue;
+            if (low.indexOf('przedłu') === -1 && low.indexOf('przedlu') === -1) continue;
+            if (low.indexOf('serwer') === -1) continue;
+            var r = el.getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            if (getComputedStyle(el).visibility === 'hidden') continue;
+            var d = 0, p = el;
+            while (p.parentElement) { d++; p = p.parentElement; }
+            var isExact = /^przedłu\\u017c\\s+serwer$/i.test(txt) || /^przedluz\\s+serwer$/i.test(txt);
+            var score = (isExact ? 100000 : 0) + d - txt.length;
+            if (score > bestScore) { bestScore = score; best = el; bestTxt = txt; }
+        }
+        if (best) { best.click(); return bestTxt.slice(0,30); }
+        return null;
+    })()"""
+                    _clicked = None
+                    for _ in range(10):
+                        try:
+                            _clicked = sb.execute_script(js_renew)
+                        except Exception:
+                            _clicked = None
+                        if _clicked:
+                            break
+                        sb.sleep(2)
+                    if not _clicked:
+                        raise Exception("主页未找到 PRZEDŁUŻ SERWER 按钮")
+                    log(f"✅ 已点击主页续期按钮: {_clicked}")
                     print("找到主页续期按钮，正在点击...")
-                    sb.click(renew_xpath)
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     # 确认弹窗中的二次确认按钮
