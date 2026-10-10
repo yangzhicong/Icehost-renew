@@ -232,57 +232,43 @@ def run():
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     # 确认弹窗中的二次确认按钮（TAK, PRZEDŁUŻ SERWER）——同样用 JS，XPath not(*) 吃不到
-                    # 先诊断：弹窗出来没？页面上有没有 tak 文本？
-                    try:
-                        _diag = sb.execute_script(
-                            """(function(){
-            var els = document.querySelectorAll('body *');
-            var out = [];
-            for (var i = 0; i < els.length; i++) {
-                var t = (els[i].innerText || '').trim();
-                if (t && t.toLowerCase().indexOf('tak') !== -1) out.push(t.slice(0,40));
-                if (out.length >= 10) break;
-            }
-            var dlg = document.querySelector('[role="dialog"], .modal');
-            return 'DIALOG:' + (dlg ? (dlg.innerText||'').trim().slice(0,80) : 'NONE') + ' | TAK_TEXTS:' + JSON.stringify(out.slice(0,5));
-        })()""")
-                        print(f"🔍 诊断: {_diag}")
-                    except Exception as _e:
-                        print(f"🔍 诊断失败: {_e}")
+                    # 确认弹窗：先按标题找弹窗容器，再在里面找 TAK 按钮
                     js_confirm = """(function(){
         var els = document.querySelectorAll('body *');
-        var best = null, bestScore = -1, bestTxt = '';
+        var dlg = null, dlgDepth = 1e9;
         for (var i = 0; i < els.length; i++) {
-            var el = els[i];
-            var txt = (el.innerText || '').trim();
-            if (!txt) continue;
-            var low = txt.toLowerCase();
-            if (low.indexOf('tak') === -1) continue;
-            var r = el.getBoundingClientRect();
-            if (r.width === 0 || r.height === 0) continue;
-            if (getComputedStyle(el).visibility === 'hidden') continue;
-            var d = 0, p = el;
+            var t = (els[i].innerText || '').trim();
+            if (t.indexOf('Potwierd\u017a przed\u0142u\u017cenie') === -1) continue;
+            var d = 0, p = els[i];
             while (p.parentElement) { d++; p = p.parentElement; }
-            var score = d - txt.length;
-            if (score > bestScore) { bestScore = score; best = el; bestTxt = txt; }
+            if (d < dlgDepth) { dlgDepth = d; dlg = els[i]; }
         }
-        if (best) { best.click(); return bestTxt.slice(0,30); }
-        return null;
+        if (!dlg) return 'NO_DLG';
+        var scope = dlg.parentElement || document;
+        var btns = scope.querySelectorAll('button, a');
+        for (var j = 0; j < btns.length; j++) {
+            var bt = (btns[j].innerText || '').trim();
+            if (!bt) continue;
+            if (bt.toLowerCase().indexOf('tak') === -1) continue;
+            var r = btns[j].getBoundingClientRect();
+            if (r.width === 0 || r.height === 0) continue;
+            btns[j].click();
+            return 'CLICKED:' + bt.slice(0,30);
+        }
+        return 'NO_TAK_IN_DLG';
     })()"""
                     _c2 = None
                     for _ in range(8):
                         try:
                             _c2 = sb.execute_script(js_confirm)
-                        except Exception:
-                            _c2 = None
-                        if _c2:
+                        except Exception as _e:
+                            _c2 = 'ERR:' + str(_e)[:50]
+                        if _c2 and _c2.startswith('CLICKED'):
                             break
                         sb.sleep(2)
-                    if not _c2:
-                        raise Exception("确认弹窗中未找到 TAK 按钮")
-                    print(f"找到二次确认按钮，正在点击... ({_c2})")
-                    sb.sleep(5)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    print(f"🔍 二次确认结果: {_c2}")
+                    if not (_c2 and _c2.startswith('CLICKED')):
+                        raise Exception(f"确认弹窗中未找到 TAK 按钮 ({_c2})")
                     print("刷新页面确认续期结果...")
                     sb.refresh()
                     sb.sleep(5)
