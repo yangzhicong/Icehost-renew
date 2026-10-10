@@ -3,7 +3,7 @@ import time
 import json
 import urllib.parse
 import requests
-# 引入 SeleniumBase 高级过盾包
+# 引入 SeleniumBase 高级过盾包！
 from seleniumbase import SB
 
 SERVER_URL = os.getenv("ICEHOST_SERVER_URL")
