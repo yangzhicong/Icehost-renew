@@ -3,7 +3,7 @@ import time
 import json
 import urllib.parse
 import requests
-# 引入 SeleniumBase 高级过盾包！
+# 引入 SeleniumBase 高级过盾包
 from seleniumbase import SB
 
 SERVER_URL = os.getenv("ICEHOST_SERVER_URL")
@@ -66,18 +66,18 @@ def run():
                     elif isinstance(raw_data, dict):
                         cookies_to_add = raw_data.get("cookies", [])
                     print("检测到 JSON 格式 Cookie，正在解析...")
-
+                
                 # 尝试二：如果解析失败，说明填的是纯文本
                 except json.JSONDecodeError:
                     print("检测到纯文本 Cookie 格式，正在自动提取并生成标准字段...")
-
+                    
                     # 提取真正的 Token 字符串值
                     token_value = raw_cookies_str
                     if "icehostpl_session=" in token_value:
                         token_value = token_value.split("icehostpl_session=")[1].split(";")[0]
                     elif "XSRF-TOKEN=" in token_value:
                         token_value = token_value.split("XSRF-TOKEN=")[1].split(";")[0]
-
+                    
                     token_value = token_value.strip()
 
                     # 最稳妥策略：自动为 Selenium 生成两个核心的 Cookie 字典
@@ -90,7 +90,7 @@ def run():
                 for c in cookies_to_add:
                     raw_value = c["value"]
                     decoded_value = urllib.parse.unquote(raw_value)
-
+                    
                     cookie_dict = {
                         "name": c["name"],
                         "value": decoded_value,
@@ -102,11 +102,11 @@ def run():
                         ss = str(c["sameSite"]).lower()
                         if ss in ["lax", "strict", "none"]:
                             cookie_dict["sameSite"] = ss.capitalize()
-
+                    
                     sb.add_cookie(cookie_dict)
-
+                
                 print("Cookie 成功注入！")
-
+                
                 # 重新刷新加载，应用 Cookie
                 sb.refresh()
                 sb.sleep(5)
@@ -133,141 +133,60 @@ def run():
             send_tg_notification(msg, "icehost_debug_screenshot.png")
             return
 
-        # 5. 续期逻辑（极简版）
-        # 详情页：6小时按钮（未过期则点）/ 显示已暂停（过期）→ 去主页
-        # 主页：PRZEDLUZ SERWER 二次确认（仅过期时有）
-        import unicodedata
+        # 5. 判定波兰语与英语红框限制
+        page_source = sb.get_page_source()
+        # 🟢 修复：增加了英文的报错关键词，防止英文面板误判
+        keywords = ["Nie możesz przedłużyć", "niedawno to zrobiłeś", "kolejne 6 godziny", "cannot extend", "recently", "next 6 hours"]
+        is_limited = any(kw in page_source for kw in keywords)
 
-        def _norm(s):
-            t = unicodedata.normalize('NFD', (s or '').lower())
-            return ''.join(c for c in t if c.isascii() and (c.isalnum() or c in ' ,'))
+        if is_limited:
+            print("检测到红框限制提示：说明未到可续期时间。结束本次运行（不发送 Telegram 提醒）。")
+            return
 
-        def _body_text():
-            try:
-                raw = sb.execute_script("(function(){return document.body ? document.body.textContent : '';})()")
-            except Exception:
-                raw = ''
-            return _norm(raw)
-
-        def _has_limit():
-            t = _body_text()
-            kws = ['nie mozesz przedluzyc', 'niedawno to zrobiles', 'kolejne 6 godziny',
-                   'cannot extend', 'recently', 'next 6 hours']
-            return any(kw in t for kw in kws)
-
-        def _click_btn(want, exclude='', timeout=20):
-            js = """(function(){
-                function norm(s){
-                    var t=(s||'').toLowerCase().normalize('NFD'),o='';
-                    for(var i=0;i<t.length;i++){var c=t.charCodeAt(i);
-                        if(c===160){o+=' ';continue;}
-                        if((c>=97&&c<=122)||(c>=48&&c<=57)||c===32||c===44)o+=t.charAt(i);}
-                    return o.replace(/ +/g,' ').trim();
-                }
-                var want=norm('__WANT__'),excl='__EXCL__'?norm('__EXCL__'):'';
-                var els=document.querySelectorAll('button,a,[role="button"]');
-                for(var i=0;i<els.length;i++){
-                    var el=els[i];
-                    if(el.offsetParent===null&&getComputedStyle(el).position!=='fixed')continue;
-                    var txt=norm(el.textContent||'');
-                    if(txt.indexOf(want)===-1)continue;
-                    if(excl&&txt.indexOf(excl)!==-1)continue;
-                    el.click();
-                    return 'CLICKED:'+el.tagName;
-                }
-                return 'NOTFOUND';
-            })()""".replace('__WANT__', want).replace('__EXCL__', exclude)
-            end = time.time() + timeout
-            while time.time() < end:
-                try:
-                    res = sb.execute_script(js)
-                except Exception as e:
-                    print(f"JS 异常: {str(e)[:100]}")
-                    res = ''
-                if isinstance(res, str) and res.startswith('CLICKED:'):
-                    print(f"已点击 -> {res}")
-                    return True
-                sb.sleep(2)
-            print(f"超时未找到按钮: {want}")
-            return False
-
+        # 6. 安全寻找并点击续期按钮
+        # 🟢 修复：同时兼容波兰语 "dodaj 6" 和 英语 "add 6"
+        renew_btn_selector = "//*[not(*) and (contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'dodaj 6') or contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'add 6'))]"
+        
         try:
-            print(f"当前页面: {sb.get_current_url()}")
-            # 先等服务器卡片数据渲染出来（DATA WAŻNOŚCI），最多 30 秒；
-            # 若一直不出现则刷新重试一次，避免在空白页上空找按钮
-            def _card_ready():
-                t = _body_text()
-                return ('waznosci' in t) or ('serwer' in t and 'running' in t) or ('zawieszony' in t)
-            ready = False
-            for _ in range(15):
-                if _card_ready():
-                    ready = True
-                    break
-                sb.sleep(2)
-            if not ready:
-                print("卡片数据未加载，刷新重试一次...")
-                sb.refresh()
-                sb.sleep(8)
-                for _ in range(15):
-                    if _card_ready():
-                        ready = True
-                        break
-                    sb.sleep(2)
-            print(f"卡片加载状态: {'OK' if ready else '仍未加载，继续尝试'}")
-            if _has_limit():
-                print("检测到限制提示：未到可续期时间，静默退出（不发 TG）。")
-                return
-            body = _body_text()
-            if 'zawieszony' in body or 'suspended' in body:
-                print("详情页显示已暂停，转去主页走二次确认流程...")
-            else:
-                print("在详情页找 6 小时按钮...")
-                if _click_btn('dodaj 6', timeout=20):
-                    sb.sleep(5)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
-                    if _has_limit():
-                        print("点击后出现限制提示：未到可续期时间，静默退出。")
-                        return
-                    print("刷新确认续期结果...")
-                    sb.refresh()
-                    sb.sleep(5)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
-                    msg = "&#9889; <b>IceHost 服务器续期成功！</b>\n服务器已延长 6 小时有效期。"
-                    print(msg)
-                    send_tg_notification(msg, "icehost_debug_screenshot.png")
-                    return
-                print("详情页未找到 6 小时按钮，转去主页检查...")
-
-            sb.open("https://dash.icehost.pl/")
+            print("正在等待续期按钮加载...")
+            sb.wait_for_element_visible(renew_btn_selector, timeout=15)
+            print("未检测到限制提示，找到续期按钮，正在点击...")
+            sb.click(renew_btn_selector)
+            
+            # ⚡ 点击后，在不刷新页面的前提下，先等待 5 秒让可能弹出的红框提示充分渲染
             sb.sleep(5)
-            if _click_btn('przedluz serwer', exclude='potwierdz', timeout=25):
-                print("等待确认弹窗...")
-                sb.sleep(3)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                if not _click_btn('tak,', timeout=15):
-                    raise Exception("已点续期但确认弹窗未出现")
-                sb.sleep(5)
-                sb.refresh()
-                sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                after = _body_text()
-                if 'zawieszony' not in after and 'suspended' not in after:
-                    msg = "&#9889; <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
-                else:
-                    msg = "&#8505;&#65039; <b>IceHost 续期指令已发送</b>\n请检查截图确认状态。"
+            sb.save_screenshot("icehost_debug_screenshot.png")
+            
+            # 立即读取当前最真实的页面源码（此时若有报错红条，必定还挂在屏幕上）
+            current_source = sb.get_page_source()
+            is_failed_due_to_limit = any(kw in current_source for kw in keywords)
+            
+            if is_failed_due_to_limit:
+                print("点击后，页面立刻弹出了限制提示：说明未到可续期时间。结束本次运行。")
+                return
+            
+            print("点击后未检测到报错红条，正在刷新页面确认续期结果...")
+            sb.refresh()
+            sb.sleep(5)
+            sb.save_screenshot("icehost_debug_screenshot.png")
+            
+            updated_source = sb.get_page_source()
+            is_now_limited = any(kw in updated_source for kw in keywords)
+            
+            if is_now_limited:
+                msg = "⚡ <b>IceHost 服务器续期成功！</b>\n服务器已真正成功延长 6 小时有效期。"
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
-                return
-
-            if 'zawieszony' in _body_text() or 'suspended' in _body_text():
-                raise Exception("服务器已暂停但主页未找到续期按钮")
-            print("&#9989; 服务器运行正常，暂无需续期。静默退出（不发 TG）。")
-            return
+            else:
+                msg = "ℹ️ <b>IceHost 续期指令已发送</b>\n按钮已点击，请检查下方截图确认是否成功。"
+                print(msg)
+                send_tg_notification(msg, "icehost_debug_screenshot.png")
+                
         except Exception as e:
-            sb.save_screenshot("icehost_debug_screenshot.png")
-            print(f"续期流程异常: {e}")
-            send_tg_notification("❌ <b>IceHost 续期异常！</b>\n未找到续期按钮或点击失败，请查看截图。",
-                                 "icehost_debug_screenshot.png")
+            # 🟢 修复：加上了 TG 推送，找不到按钮时能在 TG 收到报错截图
+            error_msg = "❌ <b>IceHost 续期异常！</b>\n未找到续期按钮，可能是网页加载失败、被限制或按钮文本有变，请查看截图。"
+            print(f"未在页面中找到可用的续期按钮: {e}")
+            send_tg_notification(error_msg, "icehost_debug_screenshot.png")
 
 if __name__ == "__main__":
     run()
