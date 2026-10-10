@@ -193,6 +193,27 @@ def run():
 
         try:
             print(f"当前页面: {sb.get_current_url()}")
+            # 先等服务器卡片数据渲染出来（DATA WAŻNOŚCI），最多 30 秒；
+            # 若一直不出现则刷新重试一次，避免在空白页上空找按钮
+            def _card_ready():
+                t = _body_text()
+                return ('waznosci' in t) or ('serwer' in t and 'running' in t) or ('zawieszony' in t)
+            ready = False
+            for _ in range(15):
+                if _card_ready():
+                    ready = True
+                    break
+                sb.sleep(2)
+            if not ready:
+                print("卡片数据未加载，刷新重试一次...")
+                sb.refresh()
+                sb.sleep(8)
+                for _ in range(15):
+                    if _card_ready():
+                        ready = True
+                        break
+                    sb.sleep(2)
+            print(f"卡片加载状态: {'OK' if ready else '仍未加载，继续尝试'}")
             if _has_limit():
                 print("检测到限制提示：未到可续期时间，静默退出（不发 TG）。")
                 return
