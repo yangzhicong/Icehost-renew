@@ -149,75 +149,90 @@ def run():
             return
 
         # 7. 两种状态的续期按钮
-        # XPath 大小写映射包含波兰语变音字母 ĄĆĘŁŃÓŚŹŻ
-        _up = 'ABCDEFGHIJKLMNOPQRSTUVWXYZĄĆĘŁŃÓŚŹŻ'
-        _lo = 'abcdefghijklmnopqrstuvwxyzacelnoszz'
-        _az_up = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-        _az_lo = 'abcdefghijklmnopqrstuvwxyz'
-        # 状态A（未过期）: "Dodaj 6 godzin" / "Add 6 hours"
-        xp_renew6 = ("//*[not(*) and ("
-                     f"contains(translate(., '{_up}', '{_lo}'), 'dodaj 6') or "
-                     f"contains(translate(., '{_up}', '{_lo}'), 'add 6'))]")
-        # 状态B（已过期/暂停）: 卡片按钮 "PRZEDŁUŻ SERWER"
-        # 候选1: 叶子节点精确匹配（变音符号感知）
-        # 候选2: button/a 宽松匹配（纯 ASCII，兼容图标子元素 / &nbsp; 等情况）
-        xp_card_candidates = [
-            ("//*[not(*) and "
-             f"normalize-space(translate(., '{_up}', '{_lo}'))='przedłuż serwer']"),
-            ("//*[self::button or self::a]["
-             f"contains(translate(., '{_az_up}', '{_az_lo}'), 'przed')]"),
-        ]
-        # 状态B确认弹窗: "TAK, PRZEDŁUŻ SERWER"
-        xp_confirm_candidates = [
-            ("//*[not(*) and "
-             f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']"),
-            ("//*[self::button or self::a]["
-             f"contains(translate(normalize-space(.), '{_az_up}', '{_az_lo}'), 'tak,')]"),
-        ]
+        # 注意：面板上的"按钮"是 div 模拟的，并非 <button> 元素，且含波兰语变音字母，
+        # XPath 方案不可靠，改用 JS 按自身直接文本查找最深层可见元素并点击。
+        JS_FIND = """
+            var want = arguments[0].toLowerCase();
+            var mode = arguments[1];  // 'exact' or 'contains'
+            function shown(elm) {
+                var e = elm;
+                while (e && e !== document.body) {
+                    var cs = window.getComputedStyle(e);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    e = e.parentElement;
+                }
+                return true;
+            }
+            var els = document.querySelectorAll('body *');
+            var best = null, bestKids = 1e9;
+            for (var i = 0; i < els.length; i++) {
+                var el = els[i];
+                var own = '';
+                for (var n = el.firstChild; n; n = n.nextSibling) {
+                    if (n.nodeType === 3) own += n.nodeValue;
+                }
+                own = own.replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+                if (!own) continue;
+                var hit = (mode === 'exact') ? (own === want) : (own.indexOf(want) !== -1);
+                if (hit && shown(el)) {
+                    var kids = el.getElementsByTagName('*').length;
+                    if (kids < bestKids) { bestKids = kids; best = el; }
+                }
+            }
+            return best;
+        """
 
-        def _wait_any(selectors, timeout=20):
-            """轮询等待任一选择器可见（主页卡片为异步渲染，不能瞬时检查）。
-            返回命中的选择器，超时返回 None。"""
+        def _find_text(text, mode='contains'):
+            try:
+                return sb.execute_script(JS_FIND, text, mode)
+            except Exception:
+                return None
+
+        def _wait_text(text, mode='contains', timeout=20):
+            """轮询等待文本元素出现（主页卡片为异步渲染），返回元素，超时返回 None。"""
             end = time.time() + timeout
             while time.time() < end:
-                for sel in selectors:
-                    try:
-                        if sb.is_element_visible(sel):
-                            return sel
-                    except Exception:
-                        pass
+                el = _find_text(text, mode)
+                if el is not None:
+                    return el
                 sb.sleep(1)
             return None
 
+        def _js_click(el):
+            sb.execute_script("arguments[0].click();", el)
+
         def _dump_buttons():
-            """调试：把页面上所有按钮/链接文本打印到日志，用于定位选择器问题。"""
+            """调试：打印含关键词的元素（标签 | 自身文本），用于定位问题。"""
             try:
-                print("---- 页面按钮文本快照 ----")
-                for el in sb.find_elements("button"):
-                    try:
-                        t = (el.text or "").strip()
-                        if t:
-                            print(f"[BUTTON] {t!r} displayed={el.is_displayed()}")
-                    except Exception:
-                        pass
-                for el in sb.find_elements("a"):
-                    try:
-                        t = (el.text or "").strip()
-                        if t and len(t) < 80:
-                            print(f"[LINK] {t!r}")
-                    except Exception:
-                        pass
+                info = sb.execute_script("""
+                    var els = document.querySelectorAll('body *');
+                    var out = ['frames=' + document.querySelectorAll('iframe').length];
+                    for (var i = 0; i < els.length; i++) {
+                        var el = els[i];
+                        var own = '';
+                        for (var n = el.firstChild; n; n = n.nextSibling) {
+                            if (n.nodeType === 3) own += n.nodeValue;
+                        }
+                        own = own.replace(/\\u00a0/g, ' ').trim();
+                        if (own && own.length < 80 && /przed|dodaj|godzin|extend|renew|tak,/i.test(own)) {
+                            out.push(el.tagName + ' | ' + JSON.stringify(own));
+                        }
+                    }
+                    return out.join('\\n');
+                """)
+                print("---- 相关元素快照 ----")
+                print(info or "(无匹配)")
                 print("---- 快照结束 ----")
             except Exception as e:
-                print(f"按钮快照失败: {e}")
+                print(f"元素快照失败: {e}")
 
         try:
             print("等待状态A按钮 (Dodaj 6 godzin)...")
-            hit_a = _wait_any([xp_renew6], timeout=20)
-            if hit_a:
+            el_a = _wait_text('dodaj 6', mode='contains', timeout=20)
+            if el_a is not None:
                 # ---- 状态A：未过期，直接续 6 小时 ----
                 print("状态A：找到 6 小时续期按钮，正在点击...")
-                sb.click(hit_a)
+                _js_click(el_a)
                 # 点击后等待可能弹出的红框提示充分渲染
                 sb.sleep(5)
                 sb.save_screenshot("icehost_debug_screenshot.png")
@@ -237,20 +252,20 @@ def run():
 
             else:
                 print("等待状态B按钮 (PRZEDŁUŻ SERWER)...")
-                hit_b = _wait_any(xp_card_candidates, timeout=20)
-                if hit_b:
+                el_b = _wait_text('przedłuż serwer', mode='exact', timeout=20)
+                if el_b is not None:
                     # ---- 状态B：已过期/暂停，需二次确认 ----
-                    print(f"状态B：服务器已过期，点击续期按钮（命中选择器序号）...")
-                    sb.click(hit_b)
+                    print("状态B：服务器已过期，点击 PRZEDŁUŻ SERWER...")
+                    _js_click(el_b)
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("等待确认弹窗...")
-                    hit_c = _wait_any(xp_confirm_candidates, timeout=15)
-                    if not hit_c:
+                    el_c = _wait_text('tak, przedłuż serwer', mode='exact', timeout=15)
+                    if el_c is None:
                         _dump_buttons()
                         raise Exception("已点击续期按钮，但确认弹窗未出现")
                     print("点击 TAK, PRZEDŁUŻ SERWER 确认延长...")
-                    sb.click(hit_c)
+                    _js_click(el_c)
                     sb.sleep(5)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("刷新页面确认续期结果...")
