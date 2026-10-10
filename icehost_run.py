@@ -155,6 +155,7 @@ def run():
         # nbsp 转空格），彻底避开 NFC/NFD 编码差异，且 JS 内不使用任何 \u 转义。
         # 要查找的文本直接内嵌进 JS 源码（__WANT__/__EXCL__），execute_script 零参数调用。
         JS_FIND_TMPL = """
+        (function() {
             function norm(s) {
                 var t = s.toLowerCase().normalize('NFD');
                 var out = '';
@@ -193,6 +194,7 @@ def run():
                 if (kids < bestKids) { bestKids = kids; best = el; }
             }
             __ACTION__
+        })()
         """
 
         def _click_btn(want, exclude='', timeout=20):
