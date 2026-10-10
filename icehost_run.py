@@ -133,81 +133,57 @@ def run():
             send_tg_notification(msg, "icehost_debug_screenshot.png")
             return
 
-        # 5. 先在服务器详情页找 6 小时续期按钮（状态A）
-        # （当前已在 SERVER_URL 页面；过期时本页只显示 "Serwer zawieszony" 无按钮；
-        #  只有面板主页才有 PRZEDLUZ SERWER 二次确认流程）
-        # 6. 判定波兰语与英语红框限制
-        page_source = sb.get_page_source()
-        # 增加了英文的报错关键词，防止英文面板误判
-        keywords = ["Nie możesz przedłużyć", "niedawno to zrobiłeś", "kolejne 6 godziny", "cannot extend", "recently", "next 6 hours"]
-        is_limited = any(kw in page_source for kw in keywords)
+        # 5. 续期逻辑（极简版）
+        # 详情页：6小时按钮（未过期则点）/ 显示已暂停（过期）→ 去主页
+        # 主页：PRZEDLUZ SERWER 二次确认（仅过期时有）
+        import unicodedata
 
-        if is_limited:
-            print("检测到红框限制提示：说明未到可续期时间。结束本次运行（不发送 Telegram 提醒）。")
-            return
+        def _norm(s):
+            t = unicodedata.normalize('NFD', (s or '').lower())
+            return ''.join(c for c in t if c.isascii() and (c.isalnum() or c in ' ,'))
 
-        # 7. 两种状态的续期按钮
-        # 面板"按钮"是 div/span 模拟的（非 <button>），文本为波兰语。
-        # 用 JS 按自身直接文本查找最深层可见元素并点击。
-        # norm(): 小写 + NFD + 只保留 a-z/0-9/空格/逗号（Ł 等无分解形式的字母直接丢弃，
-        # nbsp 转空格），彻底避开 NFC/NFD 编码差异，且 JS 内不使用任何 \u 转义。
-        # 要查找的文本直接内嵌进 JS 源码（__WANT__/__EXCL__），execute_script 零参数调用。
-        JS_FIND_TMPL = """
-        (function() {
-            function norm(s) {
-                var t = s.toLowerCase().normalize('NFD');
-                var out = '';
-                for (var i = 0; i < t.length; i++) {
-                    var c = t.charCodeAt(i);
-                    if (c === 160) { out += ' '; continue; }
-                    if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 32 || c === 44) { out += t.charAt(i); }
-                }
-                return out.replace(/ +/g, ' ').trim();
-            }
-            function shown(elm) {
-                var e = elm;
-                while (e && e !== document.body) {
-                    var cs = window.getComputedStyle(e);
-                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-                    e = e.parentElement;
-                }
-                return true;
-            }
-            var want = norm('__WANT__');
-            var excl = '__EXCL__' ? norm('__EXCL__') : '';
-            var els = document.querySelectorAll('body *');
-            var best = null, bestKids = 1e9;
-            for (var i = 0; i < els.length; i++) {
-                var el = els[i];
-                // 用 innerText（含子孙的渲染文本），防按钮文字被拆分到多个子元素
-                var own = norm(el.innerText || '');
-                if (!own) continue;
-                if (own.indexOf(want) === -1) continue;
-                if (excl && own.indexOf(excl) !== -1) continue;
-                if (!shown(el)) continue;
-                var kids = el.getElementsByTagName('*').length;
-                if (kids < bestKids) { bestKids = kids; best = el; }
-            }
-            __ACTION__
-        })()
-        """
+        def _body_text():
+            try:
+                raw = sb.execute_script("(function(){return document.body ? document.body.textContent : '';})()")
+            except Exception:
+                raw = ''
+            return _norm(raw)
+
+        def _has_limit():
+            t = _body_text()
+            kws = ['nie mozesz przedluzyc', 'niedawno to zrobiles', 'kolejne 6 godziny',
+                   'cannot extend', 'recently', 'next 6 hours']
+            return any(kw in t for kw in kws)
 
         def _click_btn(want, exclude='', timeout=20):
-            """轮询查找并点击文本匹配的最深层可见元素。成功返回 True。"""
-            js = (JS_FIND_TMPL
-                  .replace('__WANT__', want)
-                  .replace('__EXCL__', exclude)
-                  .replace('__ACTION__',
-                            "if (best) { best.click(); return 'CLICKED:' + best.tagName + '|' + "
-                            "((best.innerText || best.textContent || '').trim().slice(0, 40)); } "
-                            "return 'NOTFOUND';"))
+            js = """(function(){
+                function norm(s){
+                    var t=(s||'').toLowerCase().normalize('NFD'),o='';
+                    for(var i=0;i<t.length;i++){var c=t.charCodeAt(i);
+                        if(c===160){o+=' ';continue;}
+                        if((c>=97&&c<=122)||(c>=48&&c<=57)||c===32||c===44)o+=t.charAt(i);}
+                    return o.replace(/ +/g,' ').trim();
+                }
+                var want=norm('__WANT__'),excl='__EXCL__'?norm('__EXCL__'):'';
+                var els=document.querySelectorAll('button,a,[role="button"]');
+                for(var i=0;i<els.length;i++){
+                    var el=els[i];
+                    if(el.offsetParent===null&&getComputedStyle(el).position!=='fixed')continue;
+                    var txt=norm(el.textContent||'');
+                    if(txt.indexOf(want)===-1)continue;
+                    if(excl&&txt.indexOf(excl)!==-1)continue;
+                    el.click();
+                    return 'CLICKED:'+el.tagName;
+                }
+                return 'NOTFOUND';
+            })()""".replace('__WANT__', want).replace('__EXCL__', exclude)
             end = time.time() + timeout
             while time.time() < end:
                 try:
                     res = sb.execute_script(js)
                 except Exception as e:
-                    print(f"JS 执行异常: {str(e)[:150]}")
-                    res = 'JSERROR'
+                    print(f"JS 异常: {str(e)[:100]}")
+                    res = ''
                 if isinstance(res, str) and res.startswith('CLICKED:'):
                     print(f"已点击 -> {res}")
                     return True
@@ -215,108 +191,57 @@ def run():
             print(f"超时未找到按钮: {want}")
             return False
 
-        def _dump_buttons():
-            """调试：打印含关键词的元素（标签 | 计算样式 | 自身文本），用于定位问题。"""
-            try:
-                info = sb.execute_script("""
-                    var els = document.querySelectorAll('body *');
-                    var out = ['frames=' + document.querySelectorAll('iframe').length];
-                    for (var i = 0; i < els.length; i++) {
-                        var el = els[i];
-                        var own = el.innerText || '';
-                        if (/przed|dodaj/i.test(own)) {
-                            var cs = window.getComputedStyle(el);
-                            out.push(el.tagName + ' | display=' + cs.display +
-                                ' | visibility=' + cs.visibility +
-                                ' | text=' + JSON.stringify(own.trim().slice(0, 50)));
-                        }
-                    }
-                    return out.join('\\n');
-                """)
-                print("---- 相关元素快照 ----")
-                print(info or "(无匹配)")
-                print("---- 快照结束 ----")
-            except Exception as e:
-                print(f"元素快照失败: {e}")
-
         try:
-            state = None
-            # 步骤1：服务器详情页 → 只找 6 小时按钮（状态A）
-            print(f"当前页面 URL: {sb.get_current_url()}")
-            print(f"页面标题: {sb.get_title()}")
-            pl_server = sb.get_page_source().lower()
-            if "zawieszony" in pl_server or "suspended" in pl_server:
-                print("步骤1：服务器详情页显示已暂停，跳过本页检测，直接前往主页...")
+            print(f"当前页面: {sb.get_current_url()}")
+            if _has_limit():
+                print("检测到限制提示：未到可续期时间，静默退出（不发 TG）。")
+                return
+            body = _body_text()
+            if 'zawieszony' in body or 'suspended' in body:
+                print("详情页显示已暂停，转去主页走二次确认流程...")
             else:
-                print("步骤1：在服务器详情页寻找 6 小时续期按钮...")
+                print("在详情页找 6 小时按钮...")
                 if _click_btn('dodaj 6', timeout=20):
-                    state = 'A'
-                else:
-                    print("步骤1 未找到按钮，打印详情页实际按钮快照：")
-                    _dump_buttons()
-
-            # 步骤2：面板主页 → 只找二次确认按钮（状态B）
-            # （6 小时按钮只在服务详情页，主页没有）
-            if state is None:
-                print("步骤2：前往面板主页寻找二次确认续期按钮...")
-                sb.open("https://dash.icehost.pl/")
-                sb.sleep(5)
-                if _click_btn('przedłuż serwer', exclude='potwierdź', timeout=25):
-                    state = 'B'
-
-            if state == 'A':
-                # ---- 状态A：未过期，直接续 6 小时 ----
-                # 点击后等待可能弹出的红框提示充分渲染
-                sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                if any(kw in sb.get_page_source() for kw in keywords):
-                    print("点击后页面弹出了限制提示：说明未到可续期时间。结束本次运行。")
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    if _has_limit():
+                        print("点击后出现限制提示：未到可续期时间，静默退出。")
+                        return
+                    print("刷新确认续期结果...")
+                    sb.refresh()
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    msg = "&#9889; <b>IceHost 服务器续期成功！</b>\n服务器已延长 6 小时有效期。"
+                    print(msg)
+                    send_tg_notification(msg, "icehost_debug_screenshot.png")
                     return
-                print("点击后未检测到报错红条，刷新页面确认续期结果...")
-                sb.refresh()
-                sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                if any(kw in sb.get_page_source() for kw in keywords):
-                    msg = "⚡ <b>IceHost 服务器续期成功！</b>\n服务器已延长 6 小时有效期。"
-                else:
-                    msg = "ℹ️ <b>IceHost 续期指令已发送</b>\n按钮已点击，请检查截图确认是否成功。"
-                print(msg)
-                send_tg_notification(msg, "icehost_debug_screenshot.png")
+                print("详情页未找到 6 小时按钮，转去主页检查...")
 
-            elif state == 'B':
-                # ---- 状态B：已过期/暂停，需二次确认 ----
+            sb.open("https://dash.icehost.pl/")
+            sb.sleep(5)
+            if _click_btn('przedluz serwer', exclude='potwierdz', timeout=25):
+                print("等待确认弹窗...")
                 sb.sleep(3)
                 sb.save_screenshot("icehost_debug_screenshot.png")
-                print("等待并点击确认弹窗 (TAK, ...)...")
                 if not _click_btn('tak,', timeout=15):
-                    _dump_buttons()
-                    raise Exception("已点击续期按钮，但确认弹窗未出现")
+                    raise Exception("已点续期但确认弹窗未出现")
                 sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                print("刷新页面确认续期结果...")
                 sb.refresh()
                 sb.sleep(5)
                 sb.save_screenshot("icehost_debug_screenshot.png")
-                after = sb.get_page_source()
-                recovered = "zawieszony" not in after.lower() and "suspended" not in after.lower()
-                if recovered or any(kw in after for kw in keywords):
-                    msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
+                after = _body_text()
+                if 'zawieszony' not in after and 'suspended' not in after:
+                    msg = "&#9889; <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
                 else:
-                    msg = "ℹ️ <b>IceHost 过期续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
+                    msg = "&#8505;&#65039; <b>IceHost 续期指令已发送</b>\n请检查截图确认状态。"
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
-            else:
-                # 两种按钮都没找到：区分"无需续期"和"真正的异常"
-                pl = sb.get_page_source().lower()
-                if "zawieszony" in pl or "suspended" in pl:
-                    _dump_buttons()
-                    raise Exception("服务器已暂停但未找到续期按钮")
-                elif "serwery" in pl:
-                    print("✅ 服务器运行正常，暂无需续期。结束本次运行（不发送 TG 提醒）。")
-                    return
-                else:
-                    _dump_buttons()
-                    raise Exception("未找到任何续期按钮（页面可能未正常加载）")
+                return
+
+            if 'zawieszony' in _body_text() or 'suspended' in _body_text():
+                raise Exception("服务器已暂停但主页未找到续期按钮")
+            print("&#9989; 服务器运行正常，暂无需续期。静默退出（不发 TG）。")
+            return
         except Exception as e:
             sb.save_screenshot("icehost_debug_screenshot.png")
             print(f"续期流程异常: {e}")
