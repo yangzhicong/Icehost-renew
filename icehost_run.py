@@ -266,7 +266,6 @@ def run():
                         if _c2 and _c2.startswith('CLICKED'):
                             break
                         sb.sleep(2)
-                    print(f"🔍 二次确认结果: {_c2}")
                     if not (_c2 and _c2.startswith('CLICKED')):
                         raise Exception(f"确认弹窗中未找到 TAK 按钮 ({_c2})")
                     print("刷新页面确认续期结果...")
