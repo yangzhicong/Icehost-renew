@@ -232,6 +232,23 @@ def run():
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     # 确认弹窗中的二次确认按钮（TAK, PRZEDŁUŻ SERWER）——同样用 JS，XPath not(*) 吃不到
+                    # 先诊断：弹窗出来没？页面上有没有 tak 文本？
+                    try:
+                        _diag = sb.execute_script(
+                            """(function(){
+            var els = document.querySelectorAll('body *');
+            var out = [];
+            for (var i = 0; i < els.length; i++) {
+                var t = (els[i].innerText || '').trim();
+                if (t && t.toLowerCase().indexOf('tak') !== -1) out.push(t.slice(0,40));
+                if (out.length >= 10) break;
+            }
+            var dlg = document.querySelector('[role="dialog"], .modal');
+            return 'DIALOG:' + (dlg ? (dlg.innerText||'').trim().slice(0,80) : 'NONE') + ' | TAK_TEXTS:' + JSON.stringify(out.slice(0,5));
+        })()""")
+                        print(f"🔍 诊断: {_diag}")
+                    except Exception as _e:
+                        print(f"🔍 诊断失败: {_e}")
                     js_confirm = """(function(){
         var els = document.querySelectorAll('body *');
         var best = null, bestScore = -1, bestTxt = '';
@@ -241,7 +258,6 @@ def run():
             if (!txt) continue;
             var low = txt.toLowerCase();
             if (low.indexOf('tak') === -1) continue;
-            if (low.indexOf('przedłu') === -1 && low.indexOf('przedlu') === -1) continue;
             var r = el.getBoundingClientRect();
             if (r.width === 0 || r.height === 0) continue;
             if (getComputedStyle(el).visibility === 'hidden') continue;
