@@ -197,6 +197,75 @@ def run():
         })()
         """
 
+        # 同时检测两种续期按钮：哪个先出现就点哪个，避免过期状态下傻等状态A 20 秒
+        JS_DETECT = """
+        (function() {
+            function norm(s) {
+                var t = s.toLowerCase().normalize('NFD');
+                var out = '';
+                for (var i = 0; i < t.length; i++) {
+                    var c = t.charCodeAt(i);
+                    if (c === 160) { out += ' '; continue; }
+                    if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 32 || c === 44) { out += t.charAt(i); }
+                }
+                return out.replace(/ +/g, ' ').trim();
+            }
+            function shown(elm) {
+                var e = elm;
+                while (e && e !== document.body) {
+                    var cs = window.getComputedStyle(e);
+                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
+                    e = e.parentElement;
+                }
+                return true;
+            }
+            function findBtn(want, excl) {
+                var w = norm(want), x = excl ? norm(excl) : '';
+                var els = document.querySelectorAll('body *');
+                var best = null, bestKids = 1e9;
+                for (var i = 0; i < els.length; i++) {
+                    var el = els[i];
+                    var own = '';
+                    for (var n = el.firstChild; n; n = n.nextSibling) {
+                        if (n.nodeType === 3) own += n.nodeValue;
+                    }
+                    own = norm(own);
+                    if (!own) continue;
+                    if (own.indexOf(w) === -1) continue;
+                    if (x && own.indexOf(x) !== -1) continue;
+                    if (!shown(el)) continue;
+                    var kids = el.getElementsByTagName('*').length;
+                    if (kids < bestKids) { bestKids = kids; best = el; }
+                }
+                return best;
+            }
+            var a = findBtn('dodaj 6', '');
+            if (a) { a.click(); return 'STATE_A:' + a.tagName; }
+            var b = findBtn('przedluz serwer', 'potwierdz');
+            if (b) { b.click(); return 'STATE_B:' + b.tagName; }
+            return 'NONE';
+        })()
+        """
+
+        def _detect_and_click(timeout=25):
+            """同时检测两种续期按钮，哪个先出现就点哪个。返回 'A' / 'B' / None。"""
+            end = time.time() + timeout
+            while time.time() < end:
+                try:
+                    res = sb.execute_script(JS_DETECT)
+                except Exception as e:
+                    print(f"JS 执行异常: {str(e)[:150]}")
+                    res = 'JSERROR'
+                if isinstance(res, str) and res.startswith('STATE_A:'):
+                    print(f"判定为状态A（未过期），{res}")
+                    return 'A'
+                if isinstance(res, str) and res.startswith('STATE_B:'):
+                    print(f"判定为状态B（已过期），{res}")
+                    return 'B'
+                sb.sleep(2)
+            print("超时未找到任何续期按钮")
+            return None
+
         def _click_btn(want, exclude='', timeout=20):
             """轮询查找并点击文本匹配的最深层可见元素。成功返回 True。"""
             js = (JS_FIND_TMPL
@@ -248,10 +317,10 @@ def run():
                 print(f"元素快照失败: {e}")
 
         try:
-            print("等待并点击状态A按钮 (Dodaj 6 godzin)...")
-            if _click_btn('dodaj 6', timeout=20):
+            print("检测页面状态并点击对应的续期按钮...")
+            state = _detect_and_click(timeout=25)
+            if state == 'A':
                 # ---- 状态A：未过期，直接续 6 小时 ----
-                print("状态A：已点击 6 小时续期按钮")
                 # 点击后等待可能弹出的红框提示充分渲染
                 sb.sleep(5)
                 sb.save_screenshot("icehost_debug_screenshot.png")
@@ -269,35 +338,31 @@ def run():
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
 
-            else:
-                print("等待并点击状态B按钮 (PRZEDŁUŻ SERWER)...")
-                # 排除确认弹窗标题 "Potwierdź przedłużenie serwera" 的干扰
-                if _click_btn('przedłuż serwer', exclude='potwierdź', timeout=20):
-                    # ---- 状态B：已过期/暂停，需二次确认 ----
-                    print("状态B：已点击续期按钮")
-                    sb.sleep(3)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
-                    print("等待并点击确认弹窗 (TAK, ...)...")
-                    if not _click_btn('tak,', timeout=15):
-                        _dump_buttons()
-                        raise Exception("已点击续期按钮，但确认弹窗未出现")
-                    sb.sleep(5)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
-                    print("刷新页面确认续期结果...")
-                    sb.refresh()
-                    sb.sleep(5)
-                    sb.save_screenshot("icehost_debug_screenshot.png")
-                    after = sb.get_page_source()
-                    recovered = "zawieszony" not in after.lower() and "suspended" not in after.lower()
-                    if recovered or any(kw in after for kw in keywords):
-                        msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
-                    else:
-                        msg = "ℹ️ <b>IceHost 过期续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
-                    print(msg)
-                    send_tg_notification(msg, "icehost_debug_screenshot.png")
-                else:
+            elif state == 'B':
+                # ---- 状态B：已过期/暂停，需二次确认 ----
+                sb.sleep(3)
+                sb.save_screenshot("icehost_debug_screenshot.png")
+                print("等待并点击确认弹窗 (TAK, ...)...")
+                if not _click_btn('tak,', timeout=15):
                     _dump_buttons()
-                    raise Exception("未找到任何续期按钮")
+                    raise Exception("已点击续期按钮，但确认弹窗未出现")
+                sb.sleep(5)
+                sb.save_screenshot("icehost_debug_screenshot.png")
+                print("刷新页面确认续期结果...")
+                sb.refresh()
+                sb.sleep(5)
+                sb.save_screenshot("icehost_debug_screenshot.png")
+                after = sb.get_page_source()
+                recovered = "zawieszony" not in after.lower() and "suspended" not in after.lower()
+                if recovered or any(kw in after for kw in keywords):
+                    msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
+                else:
+                    msg = "ℹ️ <b>IceHost 过期续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
+                print(msg)
+                send_tg_notification(msg, "icehost_debug_screenshot.png")
+            else:
+                _dump_buttons()
+                raise Exception("未找到任何续期按钮")
         except Exception as e:
             sb.save_screenshot("icehost_debug_screenshot.png")
             print(f"续期流程异常: {e}")
