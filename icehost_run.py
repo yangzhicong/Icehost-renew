@@ -150,16 +150,20 @@ def run():
 
         # 7. 两种状态的续期按钮
         # 面板"按钮"是 div/span 模拟的（非 <button>），文本为波兰语。
-        # 实测发现 Ł/Ż 存在 NFC/NFD 两种 Unicode 编码，直接比对会失败，
-        # 因此 JS 内先做 NFD 归一化 + 去变音符号 + 清理零宽字符/nbsp 后再匹配。
-        JS_NORM_FIND = """
+        # 用 JS 按自身直接文本查找最深层可见元素并点击。
+        # norm(): 小写 + NFD + 只保留 a-z/0-9/空格/逗号（Ł 等无分解形式的字母直接丢弃，
+        # nbsp 转空格），彻底避开 NFC/NFD 编码差异，且 JS 内不使用任何 \u 转义。
+        # 要查找的文本直接内嵌进 JS 源码（__WANT__/__EXCL__），execute_script 零参数调用。
+        JS_FIND_TMPL = """
             function norm(s) {
-                return s.toLowerCase()
-                        .normalize('NFD')
-                        .replace(/[\\u0300-\\u036f\\u200b-\\u200d\\ufeff]/g, '')
-                        .replace(/\\u00a0/g, ' ')
-                        .replace(/\\s+/g, ' ')
-                        .trim();
+                var t = s.toLowerCase().normalize('NFD');
+                var out = '';
+                for (var i = 0; i < t.length; i++) {
+                    var c = t.charCodeAt(i);
+                    if (c === 160) { out += ' '; continue; }
+                    if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 32 || c === 44) { out += t.charAt(i); }
+                }
+                return out.replace(/ +/g, ' ').trim();
             }
             function shown(elm) {
                 var e = elm;
@@ -170,8 +174,8 @@ def run():
                 }
                 return true;
             }
-            var want = norm(arguments[0]);
-            var excl = arguments[1] ? norm(arguments[1]) : '';
+            var want = norm('__WANT__');
+            var excl = '__EXCL__' ? norm('__EXCL__') : '';
             var els = document.querySelectorAll('body *');
             var best = null, bestKids = 1e9;
             for (var i = 0; i < els.length; i++) {
@@ -188,34 +192,34 @@ def run():
                 var kids = el.getElementsByTagName('*').length;
                 if (kids < bestKids) { bestKids = kids; best = el; }
             }
-            return best;
+            __ACTION__
         """
 
-        def _wait_btn(want, exclude='', timeout=20):
-            """轮询等待文本匹配的最深层可见元素，返回元素，超时返回 None。"""
+        def _click_btn(want, exclude='', timeout=20):
+            """轮询查找并点击文本匹配的最深层可见元素。成功返回 True。"""
+            js = (JS_FIND_TMPL
+                  .replace('__WANT__', want)
+                  .replace('__EXCL__', exclude)
+                  .replace('__ACTION__',
+                            "if (best) { best.click(); return 'CLICKED:' + best.tagName + '|' + "
+                            "((best.innerText || best.textContent || '').trim().slice(0, 40)); } "
+                            "return 'NOTFOUND';"))
             end = time.time() + timeout
             while time.time() < end:
                 try:
-                    el = sb.execute_script(JS_NORM_FIND, want, exclude)
-                except Exception:
-                    el = None
-                if el is not None:
-                    return el
-                sb.sleep(1)
-            return None
-
-        def _js_click(el):
-            try:
-                info = sb.execute_script(
-                    "return arguments[0].tagName + ' | ' + "
-                    "(arguments[0].innerText || arguments[0].textContent || '').trim();", el)
-            except Exception:
-                info = "?"
-            print(f"点击元素: {info}")
-            sb.execute_script("arguments[0].click();", el)
+                    res = sb.execute_script(js)
+                except Exception as e:
+                    print(f"JS 执行异常: {str(e)[:150]}")
+                    res = 'JSERROR'
+                if isinstance(res, str) and res.startswith('CLICKED:'):
+                    print(f"已点击 -> {res}")
+                    return True
+                sb.sleep(2)
+            print(f"超时未找到按钮: {want}")
+            return False
 
         def _dump_buttons():
-            """调试：打印含关键词的元素（标签 | 自身文本），用于定位问题。"""
+            """调试：打印含关键词的元素（标签 | 计算样式 | 自身文本），用于定位问题。"""
             try:
                 info = sb.execute_script("""
                     var els = document.querySelectorAll('body *');
@@ -226,9 +230,11 @@ def run():
                         for (var n = el.firstChild; n; n = n.nextSibling) {
                             if (n.nodeType === 3) own += n.nodeValue;
                         }
-                        own = own.replace(/\\u00a0/g, ' ').trim();
-                        if (own && own.length < 80 && /przed|dodaj|godzin|extend|renew|tak,/i.test(own)) {
-                            out.push(el.tagName + ' | ' + JSON.stringify(own));
+                        if (/przed/i.test(own)) {
+                            var cs = window.getComputedStyle(el);
+                            out.push(el.tagName + ' | display=' + cs.display +
+                                ' | visibility=' + cs.visibility +
+                                ' | text=' + JSON.stringify(own.trim().slice(0, 50)));
                         }
                     }
                     return out.join('\\n');
@@ -240,12 +246,10 @@ def run():
                 print(f"元素快照失败: {e}")
 
         try:
-            print("等待状态A按钮 (Dodaj 6 godzin)...")
-            el_a = _wait_btn('dodaj 6', timeout=20)
-            if el_a is not None:
+            print("等待并点击状态A按钮 (Dodaj 6 godzin)...")
+            if _click_btn('dodaj 6', timeout=20):
                 # ---- 状态A：未过期，直接续 6 小时 ----
-                print("状态A：找到 6 小时续期按钮，正在点击...")
-                _js_click(el_a)
+                print("状态A：已点击 6 小时续期按钮")
                 # 点击后等待可能弹出的红框提示充分渲染
                 sb.sleep(5)
                 sb.save_screenshot("icehost_debug_screenshot.png")
@@ -264,22 +268,17 @@ def run():
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
 
             else:
-                print("等待状态B按钮 (PRZEDŁUŻ SERWER)...")
+                print("等待并点击状态B按钮 (PRZEDŁUŻ SERWER)...")
                 # 排除确认弹窗标题 "Potwierdź przedłużenie serwera" 的干扰
-                el_b = _wait_btn('przedłuż serwer', exclude='potwierdź', timeout=20)
-                if el_b is not None:
+                if _click_btn('przedłuż serwer', exclude='potwierdź', timeout=20):
                     # ---- 状态B：已过期/暂停，需二次确认 ----
-                    print("状态B：服务器已过期，点击续期按钮...")
-                    _js_click(el_b)
+                    print("状态B：已点击续期按钮")
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
-                    print("等待确认弹窗...")
-                    el_c = _wait_btn('tak,', timeout=15)
-                    if el_c is None:
+                    print("等待并点击确认弹窗 (TAK, ...)...")
+                    if not _click_btn('tak,', timeout=15):
                         _dump_buttons()
                         raise Exception("已点击续期按钮，但确认弹窗未出现")
-                    print("点击确认按钮延长服务器...")
-                    _js_click(el_c)
                     sb.sleep(5)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("刷新页面确认续期结果...")
