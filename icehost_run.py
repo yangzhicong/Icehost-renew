@@ -149,27 +149,30 @@ def run():
             return
 
         # 7. 两种状态的续期按钮
-        # XPath 大小写映射包含波兰语变音字母 ĄĆĘŁŃÓŚŹŻ，保证 "PRZEDŁUŻ" 能被正确匹配
+        # XPath 大小写映射包含波兰语变音字母 ĄĆĘŁŃÓŚŹŻ
         _up = 'ABCDEFGHIJKLMNOPQRSTUVWXYZĄĆĘŁŃÓŚŹŻ'
         _lo = 'abcdefghijklmnopqrstuvwxyzacelnoszz'
+        _az_up = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+        _az_lo = 'abcdefghijklmnopqrstuvwxyz'
         # 状态A（未过期）: "Dodaj 6 godzin" / "Add 6 hours"
         xp_renew6 = ("//*[not(*) and ("
                      f"contains(translate(., '{_up}', '{_lo}'), 'dodaj 6') or "
                      f"contains(translate(., '{_up}', '{_lo}'), 'add 6'))]")
         # 状态B（已过期/暂停）: 卡片按钮 "PRZEDŁUŻ SERWER"
-        # 候选1: 叶子节点精确匹配；候选2: button/a 标签全文包含（兼容按钮内带图标子元素）
+        # 候选1: 叶子节点精确匹配（变音符号感知）
+        # 候选2: button/a 宽松匹配（纯 ASCII，兼容图标子元素 / &nbsp; 等情况）
         xp_card_candidates = [
             ("//*[not(*) and "
              f"normalize-space(translate(., '{_up}', '{_lo}'))='przedłuż serwer']"),
             ("//*[self::button or self::a]["
-             f"contains(translate(normalize-space(.), '{_up}', '{_lo}'), 'przedłuż serwer')]"),
+             f"contains(translate(., '{_az_up}', '{_az_lo}'), 'przed')]"),
         ]
-        # 状态B确认弹窗: "TAK, PRZEDŁUŻ SERWER"（精确匹配，避免误命中卡片按钮）
+        # 状态B确认弹窗: "TAK, PRZEDŁUŻ SERWER"
         xp_confirm_candidates = [
             ("//*[not(*) and "
              f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']"),
             ("//*[self::button or self::a]["
-             f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']"),
+             f"contains(translate(normalize-space(.), '{_az_up}', '{_az_lo}'), 'tak,')]"),
         ]
 
         def _wait_any(selectors, timeout=20):
@@ -186,7 +189,30 @@ def run():
                 sb.sleep(1)
             return None
 
+        def _dump_buttons():
+            """调试：把页面上所有按钮/链接文本打印到日志，用于定位选择器问题。"""
+            try:
+                print("---- 页面按钮文本快照 ----")
+                for el in sb.find_elements("button"):
+                    try:
+                        t = (el.text or "").strip()
+                        if t:
+                            print(f"[BUTTON] {t!r} displayed={el.is_displayed()}")
+                    except Exception:
+                        pass
+                for el in sb.find_elements("a"):
+                    try:
+                        t = (el.text or "").strip()
+                        if t and len(t) < 80:
+                            print(f"[LINK] {t!r}")
+                    except Exception:
+                        pass
+                print("---- 快照结束 ----")
+            except Exception as e:
+                print(f"按钮快照失败: {e}")
+
         try:
+            print("等待状态A按钮 (Dodaj 6 godzin)...")
             hit_a = _wait_any([xp_renew6], timeout=20)
             if hit_a:
                 # ---- 状态A：未过期，直接续 6 小时 ----
@@ -210,16 +236,18 @@ def run():
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
 
             else:
+                print("等待状态B按钮 (PRZEDŁUŻ SERWER)...")
                 hit_b = _wait_any(xp_card_candidates, timeout=20)
                 if hit_b:
                     # ---- 状态B：已过期/暂停，需二次确认 ----
-                    print("状态B：服务器已过期，点击 PRZEDŁUŻ SERWER...")
+                    print(f"状态B：服务器已过期，点击续期按钮（命中选择器序号）...")
                     sb.click(hit_b)
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("等待确认弹窗...")
                     hit_c = _wait_any(xp_confirm_candidates, timeout=15)
                     if not hit_c:
+                        _dump_buttons()
                         raise Exception("已点击续期按钮，但确认弹窗未出现")
                     print("点击 TAK, PRZEDŁUŻ SERWER 确认延长...")
                     sb.click(hit_c)
@@ -238,6 +266,7 @@ def run():
                     print(msg)
                     send_tg_notification(msg, "icehost_debug_screenshot.png")
                 else:
+                    _dump_buttons()
                     raise Exception("未找到任何续期按钮")
         except Exception as e:
             sb.save_screenshot("icehost_debug_screenshot.png")
