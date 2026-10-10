@@ -192,7 +192,7 @@ def run():
                     sb.open("https://dash.icehost.pl/")
                     sb.sleep(5)
                     # 主页卡片上的续期按钮（波兰语，DOM 为首字母大写）
-                    renew_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZĄĆĘŁŃÓŚŹŻąćęłńóśźż', 'abcdefghijklmnopqrstuvwxyzacelnoszzacelnoszz'), 'przedluz serwer')]"
+                    renew_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'przed') and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'serwer')]"
                     sb.wait_for_element_visible(renew_xpath, timeout=20)
                     print("找到主页续期按钮，正在点击...")
                     sb.click(renew_xpath)
