@@ -227,7 +227,7 @@ def run():
                         sb.sleep(2)
                     if not _clicked:
                         raise Exception("主页未找到 PRZEDŁUŻ SERWER 按钮")
-                    log(f"✅ 已点击主页续期按钮: {_clicked}")
+                    print(f"✅ 已点击主页续期按钮: {_clicked}")
                     print("找到主页续期按钮，正在点击...")
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
