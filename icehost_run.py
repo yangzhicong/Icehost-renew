@@ -183,10 +183,49 @@ def run():
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
                 
         except Exception as e:
-            # 🟢 修复：加上了 TG 推送，找不到按钮时能在 TG 收到报错截图
-            error_msg = "❌ <b>IceHost 续期异常！</b>\n未找到续期按钮，可能是网页加载失败、被限制或按钮文本有变，请查看截图。"
-            print(f"未在页面中找到可用的续期按钮: {e}")
-            send_tg_notification(error_msg, "icehost_debug_screenshot.png")
+            # 6小时按钮没找到：判断服务器是否已过期（详情页显示已暂停）
+            # 若过期 → 去面板主页走 PRZEDŁUŻ SERWER 二次确认流程
+            page_low = sb.get_page_source().lower()
+            if "zawieszony" in page_low or "suspended" in page_low:
+                print("详情页显示已暂停，转去面板主页走二次确认续期...")
+                try:
+                    sb.open("https://dash.icehost.pl/")
+                    sb.sleep(5)
+                    # 主页卡片上的续期按钮（波兰语，DOM 为首字母大写）
+                    renew_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'przedłuż serwer')]"
+                    sb.wait_for_element_visible(renew_xpath, timeout=20)
+                    print("找到主页续期按钮，正在点击...")
+                    sb.click(renew_xpath)
+                    sb.sleep(3)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    # 确认弹窗中的二次确认按钮
+                    confirm_xpath = "//*[not(*) and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'tak,')]"
+                    sb.wait_for_element_visible(confirm_xpath, timeout=15)
+                    print("找到二次确认按钮，正在点击...")
+                    sb.click(confirm_xpath)
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    print("刷新页面确认续期结果...")
+                    sb.refresh()
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    after_low = sb.get_page_source().lower()
+                    if "zawieszony" not in after_low and "suspended" not in after_low:
+                        msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
+                    else:
+                        msg = "ℹ️ <b>IceHost 续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
+                    print(msg)
+                    send_tg_notification(msg, "icehost_debug_screenshot.png")
+                except Exception as e2:
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    error_msg = "❌ <b>IceHost 续期异常！</b>\n服务器已暂停但主页未找到续期按钮，请查看截图。"
+                    print(f"主页二次确认续期流程异常: {e2}")
+                    send_tg_notification(error_msg, "icehost_debug_screenshot.png")
+            else:
+                # 🟢 修复：加上了 TG 推送，找不到按钮时能在 TG 收到报错截图
+                error_msg = "❌ <b>IceHost 续期异常！</b>\n未找到续期按钮，可能是网页加载失败、被限制或按钮文本有变，请查看截图。"
+                print(f"未在页面中找到可用的续期按钮: {e}")
+                send_tg_notification(error_msg, "icehost_debug_screenshot.png")
 
 if __name__ == "__main__":
     run()
