@@ -157,17 +157,41 @@ def run():
                      f"contains(translate(., '{_up}', '{_lo}'), 'dodaj 6') or "
                      f"contains(translate(., '{_up}', '{_lo}'), 'add 6'))]")
         # 状态B（已过期/暂停）: 卡片按钮 "PRZEDŁUŻ SERWER"
-        xp_card = ("//*[not(*) and "
-                   f"normalize-space(translate(., '{_up}', '{_lo}'))='przedłuż serwer']")
-        # 状态B确认弹窗: "TAK, PRZEDŁUŻ SERWER"
-        xp_confirm = ("//*[not(*) and "
-                      f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']")
+        # 候选1: 叶子节点精确匹配；候选2: button/a 标签全文包含（兼容按钮内带图标子元素）
+        xp_card_candidates = [
+            ("//*[not(*) and "
+             f"normalize-space(translate(., '{_up}', '{_lo}'))='przedłuż serwer']"),
+            ("//*[self::button or self::a]["
+             f"contains(translate(normalize-space(.), '{_up}', '{_lo}'), 'przedłuż serwer')]"),
+        ]
+        # 状态B确认弹窗: "TAK, PRZEDŁUŻ SERWER"（精确匹配，避免误命中卡片按钮）
+        xp_confirm_candidates = [
+            ("//*[not(*) and "
+             f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']"),
+            ("//*[self::button or self::a]["
+             f"normalize-space(translate(., '{_up}', '{_lo}'))='tak, przedłuż serwer']"),
+        ]
+
+        def _wait_any(selectors, timeout=20):
+            """轮询等待任一选择器可见（主页卡片为异步渲染，不能瞬时检查）。
+            返回命中的选择器，超时返回 None。"""
+            end = time.time() + timeout
+            while time.time() < end:
+                for sel in selectors:
+                    try:
+                        if sb.is_element_visible(sel):
+                            return sel
+                    except Exception:
+                        pass
+                sb.sleep(1)
+            return None
 
         try:
-            if sb.is_element_visible(xp_renew6):
+            hit_a = _wait_any([xp_renew6], timeout=20)
+            if hit_a:
                 # ---- 状态A：未过期，直接续 6 小时 ----
                 print("状态A：找到 6 小时续期按钮，正在点击...")
-                sb.click(xp_renew6)
+                sb.click(hit_a)
                 # 点击后等待可能弹出的红框提示充分渲染
                 sb.sleep(5)
                 sb.save_screenshot("icehost_debug_screenshot.png")
@@ -185,33 +209,36 @@ def run():
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
 
-            elif sb.is_element_visible(xp_card):
-                # ---- 状态B：已过期/暂停，需二次确认 ----
-                print("状态B：服务器已过期，点击 PRZEDŁUŻ SERWER...")
-                sb.click(xp_card)
-                sb.sleep(3)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                print("等待确认弹窗...")
-                sb.wait_for_element_visible(xp_confirm, timeout=10)
-                print("点击 TAK, PRZEDŁUŻ SERWER 确认延长...")
-                sb.click(xp_confirm)
-                sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                print("刷新页面确认续期结果...")
-                sb.refresh()
-                sb.sleep(5)
-                sb.save_screenshot("icehost_debug_screenshot.png")
-                after = sb.get_page_source()
-                recovered = "zawieszony" not in after.lower() and "suspended" not in after.lower()
-                if recovered or any(kw in after for kw in keywords):
-                    msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
-                else:
-                    msg = "ℹ️ <b>IceHost 过期续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
-                print(msg)
-                send_tg_notification(msg, "icehost_debug_screenshot.png")
-
             else:
-                raise Exception("未找到任何续期按钮")
+                hit_b = _wait_any(xp_card_candidates, timeout=20)
+                if hit_b:
+                    # ---- 状态B：已过期/暂停，需二次确认 ----
+                    print("状态B：服务器已过期，点击 PRZEDŁUŻ SERWER...")
+                    sb.click(hit_b)
+                    sb.sleep(3)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    print("等待确认弹窗...")
+                    hit_c = _wait_any(xp_confirm_candidates, timeout=15)
+                    if not hit_c:
+                        raise Exception("已点击续期按钮，但确认弹窗未出现")
+                    print("点击 TAK, PRZEDŁUŻ SERWER 确认延长...")
+                    sb.click(hit_c)
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    print("刷新页面确认续期结果...")
+                    sb.refresh()
+                    sb.sleep(5)
+                    sb.save_screenshot("icehost_debug_screenshot.png")
+                    after = sb.get_page_source()
+                    recovered = "zawieszony" not in after.lower() and "suspended" not in after.lower()
+                    if recovered or any(kw in after for kw in keywords):
+                        msg = "⚡ <b>IceHost 服务器续期成功！</b>\n过期服务器已确认延长，暂停状态解除。"
+                    else:
+                        msg = "ℹ️ <b>IceHost 过期续期指令已发送</b>\n确认按钮已点击，请检查截图确认状态。"
+                    print(msg)
+                    send_tg_notification(msg, "icehost_debug_screenshot.png")
+                else:
+                    raise Exception("未找到任何续期按钮")
         except Exception as e:
             sb.save_screenshot("icehost_debug_screenshot.png")
             print(f"续期流程异常: {e}")
