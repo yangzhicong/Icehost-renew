@@ -149,11 +149,18 @@ def run():
             return
 
         # 7. 两种状态的续期按钮
-        # 注意：面板上的"按钮"是 div 模拟的，并非 <button> 元素，且含波兰语变音字母，
-        # XPath 方案不可靠，改用 JS 按自身直接文本查找最深层可见元素并点击。
-        JS_FIND = """
-            var want = arguments[0].toLowerCase();
-            var mode = arguments[1];  // 'exact' or 'contains'
+        # 面板"按钮"是 div/span 模拟的（非 <button>），文本为波兰语。
+        # 实测发现 Ł/Ż 存在 NFC/NFD 两种 Unicode 编码，直接比对会失败，
+        # 因此 JS 内先做 NFD 归一化 + 去变音符号 + 清理零宽字符/nbsp 后再匹配。
+        JS_NORM_FIND = """
+            function norm(s) {
+                return s.toLowerCase()
+                        .normalize('NFD')
+                        .replace(/[\\u0300-\\u036f\\u200b-\\u200d\\ufeff]/g, '')
+                        .replace(/\\u00a0/g, ' ')
+                        .replace(/\\s+/g, ' ')
+                        .trim();
+            }
             function shown(elm) {
                 var e = elm;
                 while (e && e !== document.body) {
@@ -163,6 +170,8 @@ def run():
                 }
                 return true;
             }
+            var want = norm(arguments[0]);
+            var excl = arguments[1] ? norm(arguments[1]) : '';
             var els = document.querySelectorAll('body *');
             var best = null, bestKids = 1e9;
             for (var i = 0; i < els.length; i++) {
@@ -171,34 +180,38 @@ def run():
                 for (var n = el.firstChild; n; n = n.nextSibling) {
                     if (n.nodeType === 3) own += n.nodeValue;
                 }
-                own = own.replace(/\\u00a0/g, ' ').replace(/\\s+/g, ' ').trim().toLowerCase();
+                own = norm(own);
                 if (!own) continue;
-                var hit = (mode === 'exact') ? (own === want) : (own.indexOf(want) !== -1);
-                if (hit && shown(el)) {
-                    var kids = el.getElementsByTagName('*').length;
-                    if (kids < bestKids) { bestKids = kids; best = el; }
-                }
+                if (own.indexOf(want) === -1) continue;
+                if (excl && own.indexOf(excl) !== -1) continue;
+                if (!shown(el)) continue;
+                var kids = el.getElementsByTagName('*').length;
+                if (kids < bestKids) { bestKids = kids; best = el; }
             }
             return best;
         """
 
-        def _find_text(text, mode='contains'):
-            try:
-                return sb.execute_script(JS_FIND, text, mode)
-            except Exception:
-                return None
-
-        def _wait_text(text, mode='contains', timeout=20):
-            """轮询等待文本元素出现（主页卡片为异步渲染），返回元素，超时返回 None。"""
+        def _wait_btn(want, exclude='', timeout=20):
+            """轮询等待文本匹配的最深层可见元素，返回元素，超时返回 None。"""
             end = time.time() + timeout
             while time.time() < end:
-                el = _find_text(text, mode)
+                try:
+                    el = sb.execute_script(JS_NORM_FIND, want, exclude)
+                except Exception:
+                    el = None
                 if el is not None:
                     return el
                 sb.sleep(1)
             return None
 
         def _js_click(el):
+            try:
+                info = sb.execute_script(
+                    "return arguments[0].tagName + ' | ' + "
+                    "(arguments[0].innerText || arguments[0].textContent || '').trim();", el)
+            except Exception:
+                info = "?"
+            print(f"点击元素: {info}")
             sb.execute_script("arguments[0].click();", el)
 
         def _dump_buttons():
@@ -228,7 +241,7 @@ def run():
 
         try:
             print("等待状态A按钮 (Dodaj 6 godzin)...")
-            el_a = _wait_text('dodaj 6', mode='contains', timeout=20)
+            el_a = _wait_btn('dodaj 6', timeout=20)
             if el_a is not None:
                 # ---- 状态A：未过期，直接续 6 小时 ----
                 print("状态A：找到 6 小时续期按钮，正在点击...")
@@ -252,19 +265,20 @@ def run():
 
             else:
                 print("等待状态B按钮 (PRZEDŁUŻ SERWER)...")
-                el_b = _wait_text('przedłuż serwer', mode='exact', timeout=20)
+                # 排除确认弹窗标题 "Potwierdź przedłużenie serwera" 的干扰
+                el_b = _wait_btn('przedłuż serwer', exclude='potwierdź', timeout=20)
                 if el_b is not None:
                     # ---- 状态B：已过期/暂停，需二次确认 ----
-                    print("状态B：服务器已过期，点击 PRZEDŁUŻ SERWER...")
+                    print("状态B：服务器已过期，点击续期按钮...")
                     _js_click(el_b)
                     sb.sleep(3)
                     sb.save_screenshot("icehost_debug_screenshot.png")
                     print("等待确认弹窗...")
-                    el_c = _wait_text('tak, przedłuż serwer', mode='exact', timeout=15)
+                    el_c = _wait_btn('tak,', timeout=15)
                     if el_c is None:
                         _dump_buttons()
                         raise Exception("已点击续期按钮，但确认弹窗未出现")
-                    print("点击 TAK, PRZEDŁUŻ SERWER 确认延长...")
+                    print("点击确认按钮延长服务器...")
                     _js_click(el_c)
                     sb.sleep(5)
                     sb.save_screenshot("icehost_debug_screenshot.png")
