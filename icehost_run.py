@@ -133,11 +133,9 @@ def run():
             send_tg_notification(msg, "icehost_debug_screenshot.png")
             return
 
-        # 5. 前往面板主页（续期按钮在主页服务器卡片上，不在服务器详情页）
-        print("正在前往面板主页寻找续期按钮...")
-        sb.open("https://dash.icehost.pl/")
-        sb.sleep(5)
-
+        # 5. 先在服务器详情页找 6 小时续期按钮（状态A）
+        # （当前已在 SERVER_URL 页面；过期时本页只显示 "Serwer zawieszony" 无按钮；
+        #  只有面板主页才有 PRZEDLUZ SERWER 二次确认流程）
         # 6. 判定波兰语与英语红框限制
         page_source = sb.get_page_source()
         # 增加了英文的报错关键词，防止英文面板误判
@@ -197,75 +195,6 @@ def run():
         })()
         """
 
-        # 同时检测两种续期按钮：哪个先出现就点哪个，避免过期状态下傻等状态A 20 秒
-        JS_DETECT = """
-        (function() {
-            function norm(s) {
-                var t = s.toLowerCase().normalize('NFD');
-                var out = '';
-                for (var i = 0; i < t.length; i++) {
-                    var c = t.charCodeAt(i);
-                    if (c === 160) { out += ' '; continue; }
-                    if ((c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 32 || c === 44) { out += t.charAt(i); }
-                }
-                return out.replace(/ +/g, ' ').trim();
-            }
-            function shown(elm) {
-                var e = elm;
-                while (e && e !== document.body) {
-                    var cs = window.getComputedStyle(e);
-                    if (cs.display === 'none' || cs.visibility === 'hidden') return false;
-                    e = e.parentElement;
-                }
-                return true;
-            }
-            function findBtn(want, excl) {
-                var w = norm(want), x = excl ? norm(excl) : '';
-                var els = document.querySelectorAll('body *');
-                var best = null, bestKids = 1e9;
-                for (var i = 0; i < els.length; i++) {
-                    var el = els[i];
-                    var own = '';
-                    for (var n = el.firstChild; n; n = n.nextSibling) {
-                        if (n.nodeType === 3) own += n.nodeValue;
-                    }
-                    own = norm(own);
-                    if (!own) continue;
-                    if (own.indexOf(w) === -1) continue;
-                    if (x && own.indexOf(x) !== -1) continue;
-                    if (!shown(el)) continue;
-                    var kids = el.getElementsByTagName('*').length;
-                    if (kids < bestKids) { bestKids = kids; best = el; }
-                }
-                return best;
-            }
-            var a = findBtn('dodaj 6', '');
-            if (a) { a.click(); return 'STATE_A:' + a.tagName; }
-            var b = findBtn('przedluz serwer', 'potwierdz');
-            if (b) { b.click(); return 'STATE_B:' + b.tagName; }
-            return 'NONE';
-        })()
-        """
-
-        def _detect_and_click(timeout=25):
-            """同时检测两种续期按钮，哪个先出现就点哪个。返回 'A' / 'B' / None。"""
-            end = time.time() + timeout
-            while time.time() < end:
-                try:
-                    res = sb.execute_script(JS_DETECT)
-                except Exception as e:
-                    print(f"JS 执行异常: {str(e)[:150]}")
-                    res = 'JSERROR'
-                if isinstance(res, str) and res.startswith('STATE_A:'):
-                    print(f"判定为状态A（未过期），{res}")
-                    return 'A'
-                if isinstance(res, str) and res.startswith('STATE_B:'):
-                    print(f"判定为状态B（已过期），{res}")
-                    return 'B'
-                sb.sleep(2)
-            print("超时未找到任何续期按钮")
-            return None
-
         def _click_btn(want, exclude='', timeout=20):
             """轮询查找并点击文本匹配的最深层可见元素。成功返回 True。"""
             js = (JS_FIND_TMPL
@@ -317,8 +246,25 @@ def run():
                 print(f"元素快照失败: {e}")
 
         try:
-            print("检测页面状态并点击对应的续期按钮...")
-            state = _detect_and_click(timeout=25)
+            state = None
+            # 步骤1：服务器详情页 → 只找 6 小时按钮（状态A）
+            pl_server = sb.get_page_source().lower()
+            if "zawieszony" in pl_server or "suspended" in pl_server:
+                print("步骤1：服务器详情页显示已暂停，跳过本页检测，直接前往主页...")
+            else:
+                print("步骤1：在服务器详情页寻找 6 小时续期按钮...")
+                if _click_btn('dodaj 6', timeout=20):
+                    state = 'A'
+
+            # 步骤2：面板主页 → 只找二次确认按钮（状态B）
+            # （6 小时按钮只在服务详情页，主页没有）
+            if state is None:
+                print("步骤2：前往面板主页寻找二次确认续期按钮...")
+                sb.open("https://dash.icehost.pl/")
+                sb.sleep(5)
+                if _click_btn('przedłuż serwer', exclude='potwierdź', timeout=25):
+                    state = 'B'
+
             if state == 'A':
                 # ---- 状态A：未过期，直接续 6 小时 ----
                 # 点击后等待可能弹出的红框提示充分渲染
@@ -361,8 +307,17 @@ def run():
                 print(msg)
                 send_tg_notification(msg, "icehost_debug_screenshot.png")
             else:
-                _dump_buttons()
-                raise Exception("未找到任何续期按钮")
+                # 两种按钮都没找到：区分"无需续期"和"真正的异常"
+                pl = sb.get_page_source().lower()
+                if "zawieszony" in pl or "suspended" in pl:
+                    _dump_buttons()
+                    raise Exception("服务器已暂停但未找到续期按钮")
+                elif "serwery" in pl:
+                    print("✅ 服务器运行正常，暂无需续期。结束本次运行（不发送 TG 提醒）。")
+                    return
+                else:
+                    _dump_buttons()
+                    raise Exception("未找到任何续期按钮（页面可能未正常加载）")
         except Exception as e:
             sb.save_screenshot("icehost_debug_screenshot.png")
             print(f"续期流程异常: {e}")
